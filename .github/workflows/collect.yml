@@ -22,7 +22,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 355
     env:
-      LEDGER_BRANCH: data-actions
+      LEDGER_BRANCH: data
       HOURS: ${{ inputs.hours || '5.5' }}
     steps:
       - uses: actions/setup-python@v5
@@ -31,8 +31,8 @@ jobs:
 
       - name: Prepare
         env:
-          LEDGER_REPO: ${{ secrets.LEDGER_REPO }}
-          DEPLOY_KEY: ${{ secrets.LEDGER_DEPLOY_KEY }}
+          LEDGER_REPO: ${{ secrets.LEDGER2_REPO }}
+          DEPLOY_KEY: ${{ secrets.LEDGER2_KEY }}
         run: |
           set +x
           install -d -m 700 ~/.ssh
@@ -42,9 +42,7 @@ jobs:
           export GIT_SSH_COMMAND="ssh -i $HOME/.ssh/k -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes"
           url="git@github.com:${LEDGER_REPO}.git"
           git clone -q --depth 1 --branch main --single-branch "$url" code >/dev/null 2>&1
-          if git ls-remote --exit-code --heads "$url" "$LEDGER_BRANCH" >/dev/null 2>&1; then from="$LEDGER_BRANCH"; else from=data; fi
-          git clone -q --branch "$from" --single-branch "$url" data >/dev/null 2>&1
-          git -C data checkout -q -B "$LEDGER_BRANCH"
+          git clone -q --branch "$LEDGER_BRANCH" --single-branch "$url" data >/dev/null 2>&1
           git -C data config user.name "snapshot bot"
           git -C data config user.email "snapshot-bot@users.noreply.github.com"
 
