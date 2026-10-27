@@ -1,0 +1,85 @@
+name: run
+
+on:
+  schedule:
+    - cron: "7,22,37,52 * * * *"
+  workflow_dispatch:
+    inputs:
+      hours:
+        description: "Hours before handing over"
+        default: "5.5"
+
+concurrency:
+  group: run
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+  actions: write
+
+jobs:
+  run:
+    runs-on: ubuntu-latest
+    timeout-minutes: 355
+    env:
+      LEDGER_BRANCH: data-actions
+      HOURS: ${{ inputs.hours || '5.5' }}
+    steps:
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Prepare
+        env:
+          LEDGER_REPO: ${{ secrets.LEDGER_REPO }}
+          DEPLOY_KEY: ${{ secrets.LEDGER_DEPLOY_KEY }}
+        run: |
+          set +x
+          install -d -m 700 ~/.ssh
+          (umask 077; printf '%s\n' "$DEPLOY_KEY" > ~/.ssh/k)
+          printf 'github.com ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIOMqqnkVzrm0SdG6UOoqKLsabgH5C9okWi0dh2l9GKJl\n' >> ~/.ssh/known_hosts
+          echo "GIT_SSH_COMMAND=ssh -i $HOME/.ssh/k -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes" >> "$GITHUB_ENV"
+          export GIT_SSH_COMMAND="ssh -i $HOME/.ssh/k -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes"
+          url="git@github.com:${LEDGER_REPO}.git"
+          git clone -q --depth 1 --branch main --single-branch "$url" code >/dev/null 2>&1
+          if git ls-remote --exit-code --heads "$url" "$LEDGER_BRANCH" >/dev/null 2>&1; then from="$LEDGER_BRANCH"; else from=data; fi
+          git clone -q --branch "$from" --single-branch "$url" data >/dev/null 2>&1
+          git -C data checkout -q -B "$LEDGER_BRANCH"
+          git -C data config user.name "snapshot bot"
+          git -C data config user.email "snapshot-bot@users.noreply.github.com"
+
+      - name: Loop
+        run: |
+          echo "STARTED=$(date +%s)" >> "$GITHUB_ENV"
+          end=$(python3 -c "import time,os; print(int(time.time() + float(os.environ['HOURS'])*3600))")
+          n=0
+          while :; do
+            t0=$(date +%s)
+            python code/collect.py scan --dir data >/dev/null 2>&1 || echo "step failed"
+            if [ $((n % 4)) -eq 0 ]; then
+              python code/collect.py settle --dir data >/dev/null 2>&1 || echo "step failed"
+            fi
+            n=$((n + 1))
+            (
+              cd data
+              git add -A
+              if ! git diff --cached --quiet; then
+                git commit -q -m "snapshots $(date -u +%Y-%m-%dT%H:%MZ)"
+                git push -q origin "HEAD:refs/heads/$LEDGER_BRANCH" >/dev/null 2>&1 || echo "push failed"
+              fi
+            )
+            [ "$(date +%s)" -ge "$end" ] && break
+            wait=$(( t0 + 900 - $(date +%s) ))
+            left=$(( end - $(date +%s) ))
+            [ "$wait" -gt "$left" ] && wait=$left
+            [ "$wait" -gt 0 ] && sleep "$wait"
+          done
+
+      - name: Next
+        if: always()
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          elapsed=$(( $(date +%s) - ${STARTED:-$(date +%s)} ))
+          [ "$elapsed" -lt 300 ] && sleep $(( 300 - elapsed ))
+          gh workflow run collect.yml --repo "$GITHUB_REPOSITORY" --ref main
